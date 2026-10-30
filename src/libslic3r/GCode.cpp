@@ -6624,11 +6624,7 @@ DynamicConfig GCode::timelapse_gcode_config(const Print &print, coordf_t print_z
 
 static bool slot_reload_enabled(const PrintConfig &cfg)
 {
-    if (cfg.slot_reload_mode.value == SlotReloadMode::Off)
-        return false;
-    if (cfg.slot_reload_mode.value == SlotReloadMode::On)
-        return true;
-    return cfg.printer_model.value == "Flashforge Creator 5 Pro";
+    return slot_reload_allows_extra_filaments(cfg.slot_reload_mode.value, cfg.printer_model.value);
 }
 
 static std::string slot_reload_z_text(double z)

@@ -6578,7 +6578,9 @@ bool Sidebar::should_show_SEMM_buttons()
     bool is_bbl_vendor = preset_bundle.is_bbl_vendor();
     auto cfg = preset_bundle.printers.get_edited_preset().config;
 
-    return cfg.opt_bool("single_extruder_multi_material") || is_bbl_vendor;
+    // Slot sharing uses the same add/delete filament controls as a shared-nozzle printer.
+    // Physical toolheads stay at the nozzle count; only the filament list grows.
+    return cfg.opt_bool("single_extruder_multi_material") || is_bbl_vendor || slot_reload_allows_extra_filaments(cfg);
 }
 
 void Sidebar::show_SEMM_buttons()
@@ -9551,7 +9553,23 @@ std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_
 
                 if (load_config) {
                     if (!config.empty()) {
+                        // Slot sharing must keep the file's filament colours. Preset::normalize
+                        // sizes extruder vectors to the nozzle count, and a printer reload can
+                        // then drop any filament past that count. Remember the file colours and
+                        // put them back after that reload.
+                        std::vector<std::string> file_filament_colours;
+                        std::vector<std::string> file_filament_ids;
+                        if (auto *file_colours = config.option<ConfigOptionStrings>("filament_colour"))
+                            file_filament_colours = file_colours->values;
+                        if (auto *file_ids = config.option<ConfigOptionStrings>("filament_settings_id"))
+                            file_filament_ids = file_ids->values;
+                        const bool keep_extra_filaments = slot_reload_allows_extra_filaments(config);
                         Preset::normalize(config);
+                        if (keep_extra_filaments && !file_filament_colours.empty()) {
+                            config.option<ConfigOptionStrings>("filament_colour", true)->values = file_filament_colours;
+                            if (!file_filament_ids.empty())
+                                config.option<ConfigOptionStrings>("filament_settings_id", true)->values = file_filament_ids;
+                        }
                         PresetBundle *preset_bundle = wxGetApp().preset_bundle;
 
                         {
@@ -9774,6 +9792,18 @@ std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_
                             // BBS: add preset combo box re-active logic
                             // currently found only needs re-active here
                             wxGetApp().load_current_presets(false, false);
+                            // A printer reload sizes the filament list to the nozzle count. Put the
+                            // file's colours back so parts that name filaments 5 and 6 stay on them.
+                            if (keep_extra_filaments && file_filament_colours.size() > preset_bundle->filament_presets.size()) {
+                                preset_bundle->set_num_filaments((unsigned) file_filament_colours.size());
+                                auto *colours = preset_bundle->project_config.option<ConfigOptionStrings>("filament_colour");
+                                colours->values = file_filament_colours;
+                                if (auto *multi = preset_bundle->project_config.option<ConfigOptionStrings>("filament_multi_colour")) {
+                                    multi->values.resize(file_filament_colours.size());
+                                    for (size_t i = 0; i < file_filament_colours.size(); ++i)
+                                        multi->values[i] = file_filament_colours[i];
+                                }
+                            }
                             // Update filament colors for the MM-printer profile in the full config
                             // to avoid black (default) colors for Extruders in the ObjectList,
                             // when for extruder colors are used filament colors

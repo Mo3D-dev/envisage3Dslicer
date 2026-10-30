@@ -10686,6 +10686,17 @@ static void extend_extruder_variant(DynamicPrintConfig& config, const unsigned i
             opt->resize(config.get_parameter_size(key, num_extruders), defaults.option(key));
 }
 
+bool slot_reload_allows_extra_filaments(const DynamicPrintConfig &config)
+{
+    SlotReloadMode mode = SlotReloadMode::Auto;
+    if (auto *mode_opt = config.option<ConfigOptionEnum<SlotReloadMode>>("slot_reload_mode"))
+        mode = mode_opt->value;
+    std::string printer_model;
+    if (auto *model_opt = config.option<ConfigOptionString>("printer_model"))
+        printer_model = model_opt->value;
+    return slot_reload_allows_extra_filaments(mode, printer_model);
+}
+
 void DynamicPrintConfig::set_num_extruders(unsigned int num_extruders)
 {
     extend_extruder_variant(*this, num_extruders);

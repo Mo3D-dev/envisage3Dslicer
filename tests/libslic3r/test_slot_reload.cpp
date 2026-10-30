@@ -2,6 +2,8 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include "libslic3r/GCode/SlotReloadPlanner.hpp"
+#include "libslic3r/Preset.hpp"
+#include "libslic3r/PrintConfig.hpp"
 
 #include <string>
 #include <vector>
@@ -91,4 +93,64 @@ TEST_CASE("Four colours on four slots keep their own toolheads", "[SlotReload]")
     CHECK(plan.pauses.empty());
     CHECK(plan.filament_to_slot[0] == 0);
     CHECK(plan.filament_to_slot[3] == 3);
+}
+
+// The 6-colour test cube: four 0.4 mm nozzles, six project colours, slot sharing on Auto.
+static DynamicPrintConfig six_filament_project(SlotReloadMode mode, const std::string &printer_model)
+{
+    DynamicPrintConfig config = DynamicPrintConfig::full_print_config();
+    config.option<ConfigOptionFloats>("nozzle_diameter")->values = {0.4, 0.4, 0.4, 0.4};
+    config.option<ConfigOptionBool>("single_extruder_multi_material")->value = false;
+    config.option<ConfigOptionEnum<SlotReloadMode>>("slot_reload_mode")->value = mode;
+    config.option<ConfigOptionString>("printer_model")->value = printer_model;
+    config.option<ConfigOptionStrings>("filament_colour")->values = {
+        "#008000", "#F72323", "#FFFFFF", "#898989", "#00C1AE", "#F4E2C1"};
+    config.option<ConfigOptionFloats>("filament_diameter")->values = {1.75, 1.75, 1.75, 1.75, 1.75, 1.75};
+    config.option<ConfigOptionStrings>("filament_settings_id", true)->values = {
+        "Generic PLA @FF C5P", "Generic PLA @FF C5P", "Generic PLA @FF C5P",
+        "Generic PLA @FF C5P", "Generic PLA @FF C5P", "Generic PLA @FF C5P"};
+    return config;
+}
+
+TEST_CASE("Creator 5 Pro keeps six filament colours and four nozzles", "[SlotReload]")
+{
+    DynamicPrintConfig config = six_filament_project(SlotReloadMode::Auto, "Flashforge Creator 5 Pro");
+    Preset::normalize(config);
+
+    const auto colours = config.option<ConfigOptionStrings>("filament_colour")->values;
+    REQUIRE(colours.size() == 6);
+    CHECK(colours[0] == "#008000");
+    CHECK(colours[3] == "#898989");
+    CHECK(colours[4] == "#00C1AE");
+    CHECK(colours[5] == "#F4E2C1");
+    CHECK(config.option<ConfigOptionFloats>("nozzle_diameter")->values.size() == 4);
+    CHECK(config.option<ConfigOptionFloats>("filament_diameter")->values.size() == 6);
+    // The 3MF importer treats a part extruder above this list as invalid and rewrites it to 1.
+    CHECK(config.option<ConfigOptionStrings>("filament_settings_id")->values.size() == 6);
+}
+
+TEST_CASE("Slot sharing off clamps a multi-tool project to its nozzles", "[SlotReload]")
+{
+    DynamicPrintConfig config = six_filament_project(SlotReloadMode::Off, "Flashforge Creator 5 Pro");
+    Preset::normalize(config);
+    CHECK(config.option<ConfigOptionStrings>("filament_settings_id")->values.size() == 4);
+    CHECK(config.option<ConfigOptionFloats>("filament_diameter")->values.size() == 4);
+    CHECK(config.option<ConfigOptionFloats>("nozzle_diameter")->values.size() == 4);
+}
+
+TEST_CASE("Auto leaves other printers clamped to their nozzles", "[SlotReload]")
+{
+    DynamicPrintConfig config = six_filament_project(SlotReloadMode::Auto, "Some Other Printer");
+    Preset::normalize(config);
+    CHECK(config.option<ConfigOptionStrings>("filament_settings_id")->values.size() == 4);
+    CHECK(config.option<ConfigOptionFloats>("nozzle_diameter")->values.size() == 4);
+}
+
+TEST_CASE("On keeps extra filaments for any printer", "[SlotReload]")
+{
+    DynamicPrintConfig config = six_filament_project(SlotReloadMode::On, "Some Other Printer");
+    Preset::normalize(config);
+    CHECK(config.option<ConfigOptionStrings>("filament_settings_id")->values.size() == 6);
+    CHECK(config.option<ConfigOptionStrings>("filament_colour")->values[5] == "#F4E2C1");
+    CHECK(config.option<ConfigOptionFloats>("nozzle_diameter")->values.size() == 4);
 }
