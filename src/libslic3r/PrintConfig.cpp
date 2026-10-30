@@ -292,6 +292,13 @@ static t_config_enum_values s_keys_map_WipeTowerType {
 };
 CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(WipeTowerType)
 
+static t_config_enum_values s_keys_map_SlotReloadMode {
+    { "auto", int(SlotReloadMode::Auto) },
+    { "on",   int(SlotReloadMode::On) },
+    { "off",  int(SlotReloadMode::Off) }
+};
+CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(SlotReloadMode)
+
 
 static t_config_enum_values s_keys_map_FuzzySkinMode {
     { "displacement",   int(FuzzySkinMode::Displacement) },
@@ -7157,6 +7164,19 @@ void PrintConfigDef::init_fff_params()
                     "This is useful for manual multi-material printing, where we use M600/PAUSE to trigger the manual filament change action.");
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionBool(false));
+
+    def = this->add("slot_reload_mode", coEnum);
+    def->label = L("More colours than slots");
+    def->tooltip = L("When a print uses more filaments than this printer has toolheads, share the slots and pause at the start of a reload layer so the spool can be changed by hand. G-code then names only the physical toolheads. Auto enables this for the Flashforge Creator 5 Pro and leaves every other printer unchanged.");
+    def->enum_keys_map = &ConfigOptionEnum<SlotReloadMode>::get_enum_values();
+    def->enum_values.emplace_back("auto");
+    def->enum_values.emplace_back("on");
+    def->enum_values.emplace_back("off");
+    def->enum_labels.emplace_back(L("Auto"));
+    def->enum_labels.emplace_back(L("On"));
+    def->enum_labels.emplace_back(L("Off"));
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionEnum<SlotReloadMode>(SlotReloadMode::Auto));
 
     def = this->add("wipe_tower_type", coEnum);
     def->label = L("Wipe tower type");

@@ -247,6 +247,9 @@
 #include "NotificationManager.hpp"
 #include "PresetComboBoxes.hpp"
 #include "MsgDialog.hpp"
+#include "libslic3r/GCode/SlotReloadPlanner.hpp"
+#include <fstream>
+#include <sstream>
 #include "Widgets/MultiNozzleSync.hpp"           // NozzleOption, tryPopUpMultiNozzleDialog, setExtruderNozzleCount
 #include "DeviceCore/DevNozzleSystem.h"          // DevNozzle, GetExtNozzles / GetRackNozzles
 #include "ProjectDirtyStateManager.hpp"
@@ -13455,6 +13458,35 @@ void Plater::priv::on_process_completed(SlicingProcessCompletedEvent &evt)
         BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(", cancel event, status: %1%") % evt.status();
         this->notification_manager->set_slicing_progress_canceled(_u8L("Slicing Canceled"));
         is_finished = true;
+    } else if (!has_error) {
+        PartPlate *sliced_plate = this->partplate_list.get_plate(m_cur_slice_plate);
+        const GCodeProcessorResult *slice_result = sliced_plate ? sliced_plate->get_slice_result() : nullptr;
+        if (slice_result != nullptr && !slice_result->slot_reload_swap_sheet.empty()) {
+            if (!slice_result->filename.empty()) {
+                std::ifstream gcode_in(slice_result->filename, std::ios::binary);
+                std::ostringstream gcode_text;
+                if (gcode_in)
+                    gcode_text << gcode_in.rdbuf();
+                const SlotReloadExtract extracted = extract_slot_reload_markers(gcode_text.str());
+                auto &info = this->model.plates_custom_gcodes[m_cur_slice_plate];
+                info.gcodes.erase(std::remove_if(info.gcodes.begin(), info.gcodes.end(), [](const CustomGCode::Item &item) {
+                    return item.extra == "slot_reload";
+                }), info.gcodes.end());
+                for (const SlotReloadDirective &directive : extracted.directives) {
+                    CustomGCode::Item item;
+                    item.print_z  = directive.print_z;
+                    item.type     = directive.pause ? CustomGCode::PausePrint : CustomGCode::ColorChange;
+                    item.extruder = directive.extruder_1based;
+                    item.color    = directive.color;
+                    item.extra    = "slot_reload";
+                    info.gcodes.push_back(item);
+                }
+                if (info.mode == CustomGCode::Undef)
+                    info.mode = CustomGCode::MultiAsSingle;
+            }
+            MessageDialog dialog(q, from_u8(slice_result->slot_reload_swap_sheet), _L("Filament swap sheet"), wxOK | wxICON_INFORMATION);
+            dialog.ShowModal();
+        }
     }
 
     {

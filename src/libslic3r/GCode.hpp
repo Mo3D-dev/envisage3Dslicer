@@ -19,6 +19,7 @@
 #include "GCode/RetractWhenCrossingPerimeters.hpp"
 #include "GCode/SpiralVase.hpp"
 #include "GCode/ToolOrdering.hpp"
+#include "GCode/SlotReloadPlanner.hpp"
 #include "GCode/WipeTower.hpp"
 #include "GCode/SeamPlacer.hpp"
 #include "GCode/GCodeProcessor.hpp"
@@ -924,6 +925,11 @@ protected:
 
     //some post-processing on the file, with their data class
     std::unique_ptr<FanMover> m_fan_mover;
+
+    void prepare_slot_reload(const Print &print, const ToolOrdering &ordering);
+    void reject_slot_reload_by_object(const Print &print);
+    std::string slot_reload_gcode_for_layer(double print_z) const;
+    SlotReloadPlan m_slot_reload;
 
     // BBS
     Print* m_curr_print = nullptr;

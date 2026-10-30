@@ -2729,6 +2729,7 @@ void GCodeProcessorResult::reset() {
     optimal_assignment.clear();
     filament_change_count_map.clear();
     warnings.clear();
+    slot_reload_swap_sheet.clear();
     // keep the grouping-result field default-empty across resets.
     nozzle_group_result.reset();
     // per-extruder hotend types (pre-heat injector input); repopulated by apply_config.

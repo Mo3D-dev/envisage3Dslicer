@@ -116,6 +116,14 @@ enum class WipeTowerType {
     Type2,
 };
 
+// Auto enables slot sharing on the Flashforge Creator 5 Pro and leaves every
+// other printer unchanged. On and Off override that.
+enum class SlotReloadMode {
+    Auto,
+    On,
+    Off,
+};
+
 enum PrintHostType {
     htPrusaLink, htPrusaConnect, htOctoPrint, htDuet, htUltiMaker, htFlashAir, htAstroBox, htRepetier, htMKS, htESP3D, htCrealityPrint, htObico, htFlashforge, htSimplyPrint, htElegooLink, ht3DPrinterOS, htMoonraker
 };
@@ -801,6 +809,7 @@ CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(FuzzySkinType)
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(FuzzySkinMode)
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(TopSurfaceExpansionDirection)
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(WipeTowerType)
+CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(SlotReloadMode)
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(NoiseType)
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(InfillPattern)
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(IroningType)
@@ -1821,6 +1830,7 @@ PRINT_CONFIG_CLASS_DEFINE(
     ((ConfigOptionStrings,             filament_start_gcode))
     ((ConfigOptionBool,                single_extruder_multi_material))
     ((ConfigOptionBool,                manual_filament_change))
+    ((ConfigOptionEnum<SlotReloadMode>, slot_reload_mode))
     // IDEX/IQEX (independent X extruder) — parallel printing support for IDEX/IQEX printers
     ((ConfigOptionBool,                is_imex))
     ((ConfigOptionBool,                imex_firmware_managed_zones))

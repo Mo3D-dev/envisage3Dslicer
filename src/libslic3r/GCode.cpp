@@ -7,6 +7,9 @@
 #include "Flow.hpp"
 #include "GCode/ThumbnailData.hpp"
 #include "GCode/ToolOrdering.hpp"
+#include "GCode/SlotReloadPlanner.hpp"
+#include <fstream>
+#include <cstdio>
 #include "GCode/SpiralVase.hpp"
 #include "GCode/PressureEqualizer.hpp"
 #include "GCode/SmallAreaInfillFlowCompensator.hpp"
@@ -1281,8 +1284,11 @@ static std::vector<Vec2d> get_path_of_change_filament(const Print& print)
             int old_nozzle_id  = nozzle_id_for_gcode_placeholder(group_result, old_filament_id, old_extruder_id, m_layer_idx);
             int next_nozzle_id = nozzle_id_for_gcode_placeholder(group_result, new_filament_id, new_extruder_id, m_layer_idx);
 
-            config.set_key_value("previous_extruder", new ConfigOptionInt(old_filament_id));
-            config.set_key_value("next_extruder", new ConfigOptionInt(new_filament_id));
+            const int emitted_new = (int) gcodegen.writer().emitted_tool((unsigned) std::max(new_filament_id, 0));
+            const int emitted_old = old_filament_id < 0 ? old_filament_id : (int) gcodegen.writer().emitted_tool((unsigned) old_filament_id);
+            const bool slot_map = gcodegen.writer().has_filament_slot_map();
+            config.set_key_value("previous_extruder", new ConfigOptionInt(slot_map ? emitted_old : old_filament_id));
+            config.set_key_value("next_extruder", new ConfigOptionInt(slot_map ? emitted_new : new_filament_id));
             const bool is_bbl_printer = gcodegen.m_print->is_BBL_printer();
             config.set_key_value("current_hotend", new ConfigOptionInt(
                 hotend_id_for_gcode_placeholder(group_result, is_bbl_printer, old_filament_id, old_extruder_id, m_layer_idx)));
@@ -1498,7 +1504,10 @@ static std::vector<Vec2d> get_path_of_change_filament(const Print& print)
             // non-multi-nozzle paths (the helper falls back to the extruder id).
             toolchange_command = gcodegen.writer().toolchange(new_filament_id,
                 nozzle_id_for_gcode_placeholder(group_result, new_filament_id, new_extruder_id, m_layer_idx));
-        if (!custom_gcode_changes_tool(toolchange_gcode_str, gcodegen.writer().toolchange_prefix(), new_filament_id))
+        const unsigned toolchange_id = gcodegen.writer().has_filament_slot_map()
+            ? gcodegen.writer().emitted_tool((unsigned) std::max(new_filament_id, 0))
+            : (unsigned) std::max(new_filament_id, 0);
+        if (!custom_gcode_changes_tool(toolchange_gcode_str, gcodegen.writer().toolchange_prefix(), toolchange_id))
             toolchange_gcode_str += toolchange_command;
         else {
             // We have informed the m_writer about the current extruder_id, we can ignore the generated G-code.
@@ -2849,6 +2858,8 @@ void GCode::do_export(Print* print, const char* path, GCodeProcessorResult* resu
 
     // BBS
     m_curr_print = print;
+    m_slot_reload = SlotReloadPlan{};
+    m_writer.set_filament_slot_map({});
     m_skirt_group_done.clear();
     m_pending_start_gcode_position.reset();
     m_exclusion_volume_travel_avoidance.init(print->config(), print->get_plate_origin());
@@ -3032,6 +3043,17 @@ void GCode::do_export(Print* print, const char* path, GCodeProcessorResult* resu
     // single-nozzle prints, where the injector is gated off anyway (enable_pre_heating false).
     m_processor.result().nozzle_group_result = m_print->get_layered_nozzle_group_result();
 
+    m_processor.result().slot_reload_swap_sheet = m_slot_reload.swap_sheet;
+    if (!m_slot_reload.swap_sheet.empty() && path != nullptr && path[0] != '\0') {
+        std::string sheet_path(path);
+        const auto  dot = sheet_path.find_last_of('.');
+        if (dot != std::string::npos)
+            sheet_path.resize(dot);
+        sheet_path += "_swap_sheet.txt";
+        std::ofstream sheet_out(sheet_path, std::ios::binary);
+        if (sheet_out)
+            sheet_out << m_slot_reload.swap_sheet << '\n';
+    }
     m_processor.finalize(true);
     if (m_processor.get_result().exclusion_volume_path_conflict) {
         const int extruder_id = m_processor.get_result().exclusion_volume_conflict_extruder_id;
@@ -3611,6 +3633,7 @@ void GCode::_do_export(Print& print, GCodeOutputStream &file, ThumbnailsGenerato
     const auto &seq_dynamic_orderings   = print.sequential_dynamic_orderings();
     const bool  use_seq_dynamic_cache   = print.is_dynamic_group_reorder() && !seq_dynamic_orderings.empty();
     if (print.config().print_sequence == PrintSequence::ByObject) {
+        this->reject_slot_reload_by_object(print);
         // Order object instances for sequential print.
         print_object_instances_ordering = sort_object_instances_by_model_order(print);
 //        print_object_instances_ordering = sort_object_instances_by_max_z(print);
@@ -3676,6 +3699,7 @@ void GCode::_do_export(Print& print, GCodeOutputStream &file, ThumbnailsGenerato
         // In non-sequential print, the printing extruders may have been modified by the extruder switches stored in Model::custom_gcode_per_print_z.
         // Therefore initialize the printing extruders from there.
         this->set_extruders(tool_ordering.all_extruders());
+        this->prepare_slot_reload(print, tool_ordering);
         print_object_instances_ordering =
             // By default, order object instances using nearest-neighbor chaining plus
             // 2-opt and crossing-removal post-processing.
@@ -3737,6 +3761,8 @@ void GCode::_do_export(Print& print, GCodeOutputStream &file, ThumbnailsGenerato
     this->placeholder_parser().set("first_filaments", new ConfigOptionInts(first_filaments));
     this->placeholder_parser().set("initial_tool", initial_extruder_id);
     this->placeholder_parser().set("initial_extruder", initial_extruder_id);
+    // Equals initial_extruder unless slot sharing moved that filament onto another toolhead.
+    this->placeholder_parser().set("initial_physical_tool", (int) m_writer.emitted_tool(initial_extruder_id));
     // Orca: filament types really extruded on this plate, deduplicated, in filament id order.
     // Joined with '_': safe in URLs and on print hosts, and unlike '-' it does not clash with
     // types that already contain a hyphen (PLA-CF, TPU-95A).
@@ -4311,6 +4337,10 @@ void GCode::_do_export(Print& print, GCodeOutputStream &file, ThumbnailsGenerato
     }
 
     file.write_format("; HEADER_BLOCK_END\n\n");
+    for (const std::string &line : m_slot_reload.marker_lines)
+        file.write_format(";%s\n", line.c_str());
+    if (!m_slot_reload.marker_lines.empty())
+        file.write("\n");
     }
 
       // BBS: write global config at the beginning of gcode file because printer
@@ -6592,6 +6622,98 @@ DynamicConfig GCode::timelapse_gcode_config(const Print &print, coordf_t print_z
     return config;
 }
 
+static bool slot_reload_enabled(const PrintConfig &cfg)
+{
+    if (cfg.slot_reload_mode.value == SlotReloadMode::Off)
+        return false;
+    if (cfg.slot_reload_mode.value == SlotReloadMode::On)
+        return true;
+    return cfg.printer_model.value == "Flashforge Creator 5 Pro";
+}
+
+static std::string slot_reload_z_text(double z)
+{
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "%.2f", z);
+    return buf;
+}
+
+void GCode::reject_slot_reload_by_object(const Print &print)
+{
+    if (!slot_reload_enabled(print.config()))
+        return;
+    const int slots = std::max(1, (int) print.config().nozzle_diameter.size());
+    for (unsigned filament : print.get_slice_used_filaments(false)) {
+        if ((int) filament >= slots) {
+            throw Slic3r::SlicingError(_(L("Sharing toolheads across more colours than slots only works when the print sequence is by layer.")));
+        }
+    }
+}
+
+void GCode::prepare_slot_reload(const Print &print, const ToolOrdering &ordering)
+{
+    m_slot_reload = SlotReloadPlan{};
+    m_writer.set_filament_slot_map({});
+    if (!slot_reload_enabled(print.config()))
+        return;
+
+    const int slots = std::max(1, (int) print.config().nozzle_diameter.size());
+    std::vector<SlotReloadLayer> layers;
+    layers.reserve(std::distance(ordering.begin(), ordering.end()));
+    for (const LayerTools &tools : ordering) {
+        if (tools.extruders.empty())
+            continue;
+        SlotReloadLayer layer;
+        layer.print_z    = tools.print_z;
+        layer.filaments  = tools.extruders;
+        layers.push_back(std::move(layer));
+    }
+
+    m_slot_reload = plan_slot_reloads(layers, print.config().filament_colour.values, slots);
+    if (m_slot_reload.problem == SlotReloadProblem::TooManyOnOneLayer) {
+        throw Slic3r::SlicingError(Slic3r::format(
+            _(L("Layer %1% at Z %2% mm uses %3% colours, and this printer has %4% toolheads. A single layer cannot use more colours than toolheads.")),
+            std::to_string(m_slot_reload.problem_layer_number),
+            slot_reload_z_text(m_slot_reload.problem_print_z),
+            std::to_string(m_slot_reload.problem_colour_count),
+            std::to_string(m_slot_reload.slot_count)));
+    }
+    if (m_slot_reload.problem == SlotReloadProblem::CannotShareSlots) {
+        throw Slic3r::SlicingError(Slic3r::format(
+            _(L("These colours overlap, so they do not fit on %1% toolheads. No single layer lists more colours than that, but the colours still cannot share a slot.")),
+            std::to_string(m_slot_reload.slot_count)));
+    }
+    if (m_slot_reload.problem == SlotReloadProblem::TooManyFilaments) {
+        throw Slic3r::SlicingError(_(L("This print uses too many filaments for slot sharing.")));
+    }
+    if (m_slot_reload.remap)
+        m_writer.set_filament_slot_map(m_slot_reload.filament_to_slot);
+}
+
+std::string GCode::slot_reload_gcode_for_layer(double print_z) const
+{
+    std::string gcode;
+    for (const SlotReloadPause &pause : m_slot_reload.pauses) {
+        if (std::abs(pause.print_z - print_z) > 0.001)
+            continue;
+        gcode += ";" + GCodeProcessor::reserved_tag(GCodeProcessor::ETags::Pause_Print) + "\n";
+        gcode += "M400\n";
+        std::string pause_gc = m_config.machine_pause_gcode.value;
+        if (pause_gc.empty())
+            pause_gc = "M25";
+        if (pause_gc.back() != '\n')
+            pause_gc += '\n';
+        gcode += pause_gc;
+        for (const SlotReloadSwap &swap : pause.swaps) {
+            const std::string color = swap.to_filament < m_config.filament_colour.values.size()
+                ? m_config.filament_colour.get_at(swap.to_filament) : std::string("#000000");
+            gcode += ";" + GCodeProcessor::reserved_tag(GCodeProcessor::ETags::Color_Change) + ",T" +
+                     std::to_string(swap.slot) + "," + color + "\n";
+        }
+    }
+    return gcode;
+}
+
 // In sequential mode, process_layer is called once per each object and its copy,
 // therefore layers will contain a single entry and single_object_instance_idx will point to the copy of the object.
 // In non-sequential mode, process_layer is called per each print_z height with all object and support layers accumulated.
@@ -6714,6 +6836,10 @@ LayerResult GCode::process_layer(
             print.config().before_layer_change_gcode.value, m_writer.filament()->id(), &config)
             + "\n";
     }
+
+    // Slot reload pauses sit at the layer start, before the layer-change retraction,
+    // matching a hand-edited file that printed on the Creator 5 Pro.
+    gcode += this->slot_reload_gcode_for_layer(print_z);
 
     PrinterStructure printer_structure           = m_config.printer_structure.value;
     bool is_i3_printer = printer_structure == PrinterStructure::psI3;
@@ -11114,7 +11240,8 @@ std::string GCode::set_extruder(unsigned int new_filament_id, double print_z, bo
     DynamicConfig dyn_config;
     dyn_config.set_key_value("outer_wall_volumetric_speed", new ConfigOptionFloat(outer_wall_volumetric_speed));
     dyn_config.set_key_value("previous_extruder", new ConfigOptionInt(old_filament_id));
-    dyn_config.set_key_value("next_extruder", new ConfigOptionInt((int)new_filament_id));
+    dyn_config.set_key_value("next_extruder", new ConfigOptionInt(m_writer.has_filament_slot_map()
+        ? (int) m_writer.emitted_tool(new_filament_id) : (int) new_filament_id));
     dyn_config.set_key_value("current_hotend", new ConfigOptionInt(
         hotend_id_for_gcode_placeholder(group_result, m_print->is_BBL_printer(), old_filament_id, old_extruder_id, m_layer_index)));
     dyn_config.set_key_value("next_hotend", new ConfigOptionInt(
@@ -11285,7 +11412,8 @@ std::string GCode::set_extruder(unsigned int new_filament_id, double print_z, bo
     // tool activation there). Mid-print T<n> emits normally; Print::validate blocks
     // multi-color setups where it wouldn't make sense.
     const bool suppress_imex_bare = imex_suppresses_bare_toolchange(m_imex_parallel_mode, m_toolchange_count);
-    if (!custom_gcode_changes_tool(toolchange_gcode_parsed, m_writer.toolchange_prefix(), new_filament_id)
+    const unsigned emitted_toolchange_id = m_writer.has_filament_slot_map() ? m_writer.emitted_tool(new_filament_id) : new_filament_id;
+    if (!custom_gcode_changes_tool(toolchange_gcode_parsed, m_writer.toolchange_prefix(), emitted_toolchange_id)
         && !suppress_imex_bare)
         gcode += toolchange_command;
     else {

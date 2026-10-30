@@ -361,6 +361,11 @@ std::string GCodeWriter::set_temperature(unsigned int temperature, bool wait, in
     // set tool to -1 to make sure we won't emit T parameter for single extruder or SEMM
     if (!this->multiple_extruders || m_single_extruder_multi_material) {
         tool = -1;
+    } else if (!m_filament_slot_map.empty()) {
+        // Slot sharing addresses heaters by the physical tool, never by a filament
+        // index past the toolheads the printer has.
+        if (tool >= 0)
+            tool = (int) emitted_tool((unsigned) tool);
     } else {
         // Every caller of this overload addresses filaments by LOGICAL id, but M104/M109
         // name a physical heater -- so translate at the one point they all pass through.
@@ -601,6 +606,8 @@ std::string GCodeWriter::set_pressure_advance(double pa, int tool) const
     std::ostringstream gcode;
     if (pa < 0)
         return gcode.str();
+    if (tool >= 0 && !m_filament_slot_map.empty())
+        tool = (int) emitted_tool((unsigned) tool);
     if (m_is_bbl_printers) {
         // SoftFever: set L1000 to use linear model
         gcode << "M900 K" << std::setprecision(4) << pa << " L1000 M10 ; Override pressure advance value\n";
@@ -818,10 +825,11 @@ std::string GCodeWriter::toolchange(unsigned int filament_id, int nozzle_id)
         // M1020 form must not shadow it. nozzle_id is signed: the null-safe nozzle
         // lookup legitimately yields -1 ("no specific nozzle"), matching the literal
         // H-1 the stock change templates emit; an unsigned would wrap.
+        const unsigned emitted = this->emitted_tool(filament_id);
         if (m_is_bbl_printers && !config.manual_filament_change)
-            gcode << "M1020 S" << filament_id << " H" << nozzle_id;
+            gcode << "M1020 S" << emitted << " H" << nozzle_id;
         else
-            gcode << this->toolchange_prefix() << filament_id;
+            gcode << this->toolchange_prefix() << emitted;
         if (GCodeWriter::full_gcode_comment)
             gcode << " ; change extruder";
         gcode << "\n";

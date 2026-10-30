@@ -396,6 +396,8 @@ inline constexpr float DEFAULT_FILAMENT_DENSITY = 1.245f;
         bool spiral_vase_mode;
         //BBS
         std::vector<SliceWarning> warnings;
+        // Plain-text swap sheet for a print that shares toolheads. Empty when unused.
+        std::string slot_reload_swap_sheet;
         int nozzle_hrc;
         std::vector<NozzleType> nozzle_type;
         // Per-extruder physical hotend type. Fed to the pre-heat injector's TimeProcessContext
@@ -470,6 +472,7 @@ inline constexpr float DEFAULT_FILAMENT_DENSITY = 1.245f;
             custom_gcode_per_print_z = std::forward<Other>(other).custom_gcode_per_print_z;
             spiral_vase_mode = std::forward<Other>(other).spiral_vase_mode;
             warnings = std::forward<Other>(other).warnings;
+            slot_reload_swap_sheet = std::forward<Other>(other).slot_reload_swap_sheet;
             bed_type = std::forward<Other>(other).bed_type;
             gcode_check_result = std::forward<Other>(other).gcode_check_result;
             limit_filament_maps = std::forward<Other>(other).limit_filament_maps;

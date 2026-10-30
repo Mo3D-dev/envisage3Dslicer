@@ -92,6 +92,18 @@ public:
     // printed with the same extruder.
     std::string toolchange_prefix() const;
     std::string toolchange(unsigned int filament_id, int nozzle_id);
+    // Empty map: tool numbers stay the filament ids. A non-empty map emits the
+    // physical slot for that filament, including temperatures and pressure advance.
+    void set_filament_slot_map(std::vector<int> filament_to_slot) { m_filament_slot_map = std::move(filament_to_slot); }
+    bool has_filament_slot_map() const { return !m_filament_slot_map.empty(); }
+    unsigned emitted_tool(unsigned filament_id) const {
+        if (filament_id < m_filament_slot_map.size()) {
+            const int slot = m_filament_slot_map[filament_id];
+            if (slot >= 0)
+                return (unsigned) slot;
+        }
+        return filament_id;
+    }
     std::string set_speed(double F, const std::string &comment = std::string(), const std::string &cooling_marker = std::string());
     // SoftFever NOTE: the returned speed is mm/minute
     double      get_current_speed() const { return m_current_speed;}
@@ -258,6 +270,8 @@ protected:
 private:
 	// Extruders are sorted by their ID, so that binary search is possible.
     std::vector<Extruder> m_filament_extruders;
+    // filament id -> physical tool. Empty means emit the filament id unchanged.
+    std::vector<int>      m_filament_slot_map;
     bool            m_single_extruder_multi_material;
     std::vector<Extruder*> m_curr_filament_extruder;
     int        m_curr_extruder_id;
