@@ -3,8 +3,10 @@
 
 #include "libslic3r/GCode/SlotReloadPlanner.hpp"
 #include "libslic3r/Preset.hpp"
+#include "libslic3r/PresetBundle.hpp"
 #include "libslic3r/PrintConfig.hpp"
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -153,4 +155,27 @@ TEST_CASE("On keeps extra filaments for any printer", "[SlotReload]")
     CHECK(config.option<ConfigOptionStrings>("filament_settings_id")->values.size() == 6);
     CHECK(config.option<ConfigOptionStrings>("filament_colour")->values[5] == "#F4E2C1");
     CHECK(config.option<ConfigOptionFloats>("nozzle_diameter")->values.size() == 4);
+}
+
+TEST_CASE("A six-colour project replaces a leftover mixed filament", "[SlotReload]")
+{
+    const std::vector<std::string> colours = {"#008000", "#F72323", "#FFFFFF", "#898989", "#00C1AE", "#F4E2C1"};
+
+    PresetBundle bundle;
+    bundle.project_config.option<ConfigOptionBools>("filament_is_mixed", true)->values = {0, 0, 0, 0, 1};
+    bundle.project_config.option<ConfigOptionStrings>("filament_mixed_components", true)->values = {"", "", "", "", "1,2"};
+    bundle.project_config.option<ConfigOptionStrings>("filament_colour")->values = {"#26A69A", "#D27E3C", "#B28AE4", "#C5D752"};
+
+    DynamicPrintConfig config = six_filament_project(SlotReloadMode::Auto, "Flashforge Creator 5 Pro");
+    config.option<ConfigOptionStrings>("filament_type", true)->values.assign(6, "PLA");
+    config.option<ConfigOptionInts>("filament_self_index", true)->values = {1, 2, 3, 4, 5, 6};
+    config.option<ConfigOptionStrings>("filament_extruder_variant", true)->values.assign(6, "Direct Drive Standard");
+    Preset::normalize(config);
+    bundle.load_config_model("Envisage3D_test_cube_6col.3mf", std::move(config));
+
+    REQUIRE(bundle.filament_presets.size() == 6);
+    CHECK(bundle.project_config.option<ConfigOptionStrings>("filament_colour")->values == colours);
+    const auto &mixed = bundle.project_config.option<ConfigOptionBools>("filament_is_mixed")->values;
+    REQUIRE(mixed.size() == 6);
+    CHECK(std::find(mixed.begin(), mixed.end(), static_cast<unsigned char>(1)) == mixed.end());
 }

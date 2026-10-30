@@ -190,6 +190,7 @@
 #include "libslic3r/CSGMesh/PerformCSGMeshBooleans.hpp"
 
 #include "GUI.hpp"
+#include "BuildCommit.hpp"
 #include "GUI_App.hpp"
 #include "Shortcuts.hpp"
 #include "GUI_ObjectList.hpp"
@@ -9792,16 +9793,22 @@ std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_
                             // BBS: add preset combo box re-active logic
                             // currently found only needs re-active here
                             wxGetApp().load_current_presets(false, false);
-                            // A printer reload sizes the filament list to the nozzle count. Put the
-                            // file's colours back so parts that name filaments 5 and 6 stay on them.
-                            if (keep_extra_filaments && file_filament_colours.size() > preset_bundle->filament_presets.size()) {
-                                preset_bundle->set_num_filaments((unsigned) file_filament_colours.size());
-                                auto *colours = preset_bundle->project_config.option<ConfigOptionStrings>("filament_colour");
-                                colours->values = file_filament_colours;
-                                if (auto *multi = preset_bundle->project_config.option<ConfigOptionStrings>("filament_multi_colour")) {
-                                    multi->values.resize(file_filament_colours.size());
-                                    for (size_t i = 0; i < file_filament_colours.size(); ++i)
-                                        multi->values[i] = file_filament_colours[i];
+                            // A printer reload sizes the filament list to the nozzle count, and a
+                            // selection callback can write the colours that were already on screen.
+                            // Put the file's colours back so parts on filaments 5 and 6 stay there.
+                            {
+                                auto *loaded_colours = preset_bundle->project_config.option<ConfigOptionStrings>("filament_colour");
+                                const bool colours_match = loaded_colours != nullptr && loaded_colours->values == file_filament_colours;
+                                if (keep_extra_filaments && !file_filament_colours.empty() &&
+                                    (file_filament_colours.size() != preset_bundle->filament_presets.size() || !colours_match)) {
+                                    if (file_filament_colours.size() != preset_bundle->filament_presets.size())
+                                        preset_bundle->set_num_filaments((unsigned) file_filament_colours.size());
+                                    preset_bundle->project_config.option<ConfigOptionStrings>("filament_colour")->values = file_filament_colours;
+                                    if (auto *multi = preset_bundle->project_config.option<ConfigOptionStrings>("filament_multi_colour")) {
+                                        multi->values.resize(file_filament_colours.size());
+                                        for (size_t i = 0; i < file_filament_colours.size(); ++i)
+                                            multi->values[i] = file_filament_colours[i];
+                                    }
                                 }
                             }
                             // Update filament colors for the MM-printer profile in the full config
@@ -14536,19 +14543,29 @@ wxString Plater::priv::get_project_name()
     return m_project_name;
 }
 
+// The short git sha of this build, so two disk images can be told apart without opening About.
+static wxString window_title_with_build(const wxString &title)
+{
+    const wxString build = wxString::FromUTF8(build_commit_label);
+    if (build.empty() || build == wxString("0000000"))
+        return title;
+    return title + " (" + build + ")";
+}
+
 //BBS
 void Plater::priv::set_project_name(const wxString& project_name)
 {
     BOOST_LOG_TRIVIAL(trace) << __FUNCTION__ << __LINE__ << " project is:" << project_name;
     m_project_name = project_name;
+    const wxString titled = window_title_with_build(m_project_name);
     //update topbar title
 #ifdef __APPLE__
-    wxGetApp().mainframe->SetTitle(m_project_name);
+    wxGetApp().mainframe->SetTitle(titled);
     if (!m_project_name.IsEmpty())
         wxGetApp().mainframe->update_title_colour_after_set_title();
 #else
-    wxGetApp().mainframe->SetTitle(m_project_name + " - OrcaSlicer");
-    wxGetApp().mainframe->topbar()->SetTitle(m_project_name);
+    wxGetApp().mainframe->SetTitle(titled + " - OrcaSlicer");
+    wxGetApp().mainframe->topbar()->SetTitle(titled);
 #endif
 }
 
@@ -14562,6 +14579,7 @@ void Plater::priv::update_title_dirty_status()
         title = "*" + m_project_name;
     else
         title = m_project_name;
+    title = window_title_with_build(title);
 
 #ifdef __APPLE__
     wxGetApp().mainframe->SetTitle(title);
