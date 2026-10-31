@@ -539,11 +539,26 @@ std::string Preset::remove_suffix_modified(const std::string &name)
         name;
 }
 
+// Filament vectors that name the project's colours, even when a sibling vector was
+// saved at the nozzle count. The longest of these is the filament count to keep.
+static size_t project_filament_count(const DynamicPrintConfig &config)
+{
+    size_t n = 0;
+    if (auto *opt = dynamic_cast<const ConfigOptionStrings *>(config.option("filament_colour")))
+        n = std::max(n, opt->values.size());
+    if (auto *opt = dynamic_cast<const ConfigOptionFloats *>(config.option("filament_diameter")))
+        n = std::max(n, opt->values.size());
+    if (auto *opt = dynamic_cast<const ConfigOptionStrings *>(config.option("filament_settings_id")))
+        n = std::max(n, opt->values.size());
+    return n;
+}
+
 // Update new extruder fields at the printer profile.
 void Preset::normalize(DynamicPrintConfig &config)
 {
     size_t n = 1;
-    if (config.option("single_extruder_multi_material") == nullptr || config.opt_bool("single_extruder_multi_material")) {
+    const bool semm = config.option("single_extruder_multi_material") == nullptr || config.opt_bool("single_extruder_multi_material");
+    if (semm) {
         // BBS
         auto* filament_diameter = dynamic_cast<const ConfigOptionFloats*>(config.option("filament_diameter"));
         if (filament_diameter != nullptr) {
@@ -557,6 +572,9 @@ void Preset::normalize(DynamicPrintConfig &config)
             n = nozzle_diameter->values.size();
             // Loaded the FFF Printer settings. Verify, that all extruder dependent values have enough values.
             config.set_num_extruders((unsigned int) n);
+            // Slot sharing keeps a longer filament list. Toolheads stay at the nozzle count.
+            if (slot_reload_allows_extra_filaments(config))
+                n = std::max(n, project_filament_count(config));
         }
     }
 

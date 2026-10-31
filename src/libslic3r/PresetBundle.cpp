@@ -6430,9 +6430,32 @@ void PresetBundle::load_config_file_config(const std::string &name_or_path, bool
         // Load the project config values. In published mode only the plate/bed geometry keys
         // cross over (the receiver must not inherit the author's filament/purge data).
         this->project_config.apply_only(config, is_published ? s_project_options_published : s_project_options);
-        // Older projects inherit one-element mixed defaults, regardless of their filament count.
-        if (!is_published)
+        // A project that does not define a mixed filament must not keep a mix from the
+        // session that was open before. That mix occupies a later slot and would hide
+        // one of the project's own colours (the 6-colour cube's fifth and sixth filaments).
+        if (!is_published) {
+            const auto *incoming = config.option<ConfigOptionBools>("filament_is_mixed");
+            const bool file_has_mix = incoming != nullptr &&
+                std::find(incoming->values.begin(), incoming->values.end(), static_cast<unsigned char>(true)) != incoming->values.end();
+            if (!file_has_mix) {
+                auto clear_bools = [this, num_filaments](const char *key) {
+                    if (auto *opt = this->project_config.option<ConfigOptionBools>(key, true))
+                        opt->values.assign(num_filaments, static_cast<unsigned char>(false));
+                };
+                auto clear_strings = [this, num_filaments](const char *key) {
+                    if (auto *opt = this->project_config.option<ConfigOptionStrings>(key, true))
+                        opt->values.assign(num_filaments, std::string());
+                };
+                clear_bools("filament_is_mixed");
+                clear_strings("filament_mixed_components");
+                clear_strings("filament_mixed_sublayer_ratios");
+                clear_bools("filament_mixed_gradient");
+                clear_strings("filament_mixed_gradient_range");
+                clear_strings("filament_mixed_gradient_curve");
+                clear_bools("filament_mixed_gradient_per_part");
+            }
             resize_mixed_filament_metadata(this->project_config, num_filaments, num_filaments);
+        }
 
         break;
     }

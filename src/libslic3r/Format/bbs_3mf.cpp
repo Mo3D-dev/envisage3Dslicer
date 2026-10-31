@@ -14,6 +14,8 @@
 #include "../I18N.hpp"
 #include "libslic3r/Point.hpp"
 #include "libslic3r/GCode/GCodeProcessor.hpp"
+#include "libslic3r/GCode/SlotReloadPlanner.hpp"
+#include <fstream>
 #include "libslic3r/PrintConfig.hpp"
 #include "libslic3r/MultiNozzleUtils.hpp"
 #include "libslic3r/TriangleMesh.hpp"
@@ -6297,7 +6299,7 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
         bool _add_slice_info_config_file_to_archive(mz_zip_archive &archive, const Model &model, PlateDataPtrs &plate_data_list, const ObjectToObjectDataMap &objects_data, const DynamicPrintConfig& config);
         bool _add_filament_sequence_file_to_archive(mz_zip_archive& archive, const PlateDataPtrs& plate_data_list);
         bool _add_gcode_file_to_archive(mz_zip_archive& archive, const Model& model, PlateDataPtrs& plate_data_list, Export3mfProgressFn proFn = nullptr);
-        bool _add_custom_gcode_per_print_z_file_to_archive(mz_zip_archive& archive, Model& model, const DynamicPrintConfig* config);
+        bool _add_custom_gcode_per_print_z_file_to_archive(mz_zip_archive& archive, Model& model, const DynamicPrintConfig* config, const PlateDataPtrs& plate_data_list);
         bool _add_auxiliary_dir_to_archive(mz_zip_archive &archive, const std::string &aux_dir, PackingTemporaryData &data);
 
         static int convert_instance_id_to_resource_id(const Model& model, int obj_id, int instance_id)
@@ -6746,7 +6748,7 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
 
             // Adds custom gcode per height file ("Metadata/Prusa_Slicer_custom_gcode_per_print_z.xml").
             // All custom gcode per height of whole Model are stored here
-            if (!_add_custom_gcode_per_print_z_file_to_archive(archive, model, config)) { return false; }
+            if (!_add_custom_gcode_per_print_z_file_to_archive(archive, model, config, plate_data_list)) { return false; }
 
             // BBS progress point
             BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ":" << __LINE__ << boost::format(", before add project_settings\n");
@@ -9076,11 +9078,48 @@ bool _BBS_3MF_Exporter::_add_gcode_file_to_archive(mz_zip_archive& archive, cons
     return result;
 }
 
-bool _BBS_3MF_Exporter::_add_custom_gcode_per_print_z_file_to_archive(mz_zip_archive& archive, Model& model, const DynamicPrintConfig* config)
+static std::map<int, SlotReloadExtract> slot_reload_from_plates(const PlateDataPtrs &plate_data_list)
+{
+    std::map<int, SlotReloadExtract> out;
+    for (const PlateData *plate : plate_data_list) {
+        if (plate == nullptr || plate->gcode_file.empty() || !boost::filesystem::exists(plate->gcode_file))
+            continue;
+        std::ifstream in(plate->gcode_file, std::ios::binary);
+        if (!in)
+            continue;
+        std::ostringstream text;
+        text << in.rdbuf();
+        SlotReloadExtract extracted = extract_slot_reload_markers(text.str());
+        if (!extracted.swap_sheet.empty() || !extracted.directives.empty())
+            out[plate->plate_index] = std::move(extracted);
+    }
+    return out;
+}
+
+static void append_slot_reload_layers(pt::ptree &plate_tree, const std::vector<SlotReloadDirective> &directives)
+{
+    for (const SlotReloadDirective &directive : directives) {
+        std::ostringstream zos;
+        zos.setf(std::ios::fixed);
+        zos.precision(2);
+        zos << directive.print_z;
+        pt::ptree &code_tree = plate_tree.add("layer", "");
+        code_tree.put("<xmlattr>.top_z", zos.str());
+        code_tree.put("<xmlattr>.type", directive.pause ? static_cast<int>(CustomGCode::PausePrint) : static_cast<int>(CustomGCode::ColorChange));
+        code_tree.put("<xmlattr>.extruder", directive.extruder_1based);
+        code_tree.put("<xmlattr>.color", directive.color);
+        code_tree.put("<xmlattr>.extra", "");
+        code_tree.put("<xmlattr>.gcode", directive.pause ? "M25" : "M600");
+    }
+}
+
+bool _BBS_3MF_Exporter::_add_custom_gcode_per_print_z_file_to_archive(mz_zip_archive& archive, Model& model, const DynamicPrintConfig* config, const PlateDataPtrs& plate_data_list)
 {
     //BBS: add plate tree related logic
     std::string out = "";
     bool has_custom_gcode = false;
+    const std::map<int, SlotReloadExtract> slot_reloads = slot_reload_from_plates(plate_data_list);
+    std::map<int, bool> slot_reload_written;
     pt::ptree tree;
     pt::ptree& main_tree = tree.add("custom_gcodes_per_layer", "");
     for (auto custom_gcodes : model.plates_custom_gcodes) {
@@ -9091,6 +9130,10 @@ bool _BBS_3MF_Exporter::_add_custom_gcode_per_print_z_file_to_archive(mz_zip_arc
 
             // store data of custom_gcode_per_print_z
             for (const CustomGCode::Item& code : custom_gcodes.second.gcodes) {
+                // Slot-reload items are mirrored from the plate G-code below, so the
+                // preview and the file do not each write a copy.
+                if (code.extra == "slot_reload")
+                    continue;
                 pt::ptree& code_tree = plate_tree.add("layer", "");
                 code_tree.put("<xmlattr>.top_z", code.print_z);
                 code_tree.put("<xmlattr>.type", static_cast<int>(code.type));
@@ -9106,12 +9149,29 @@ bool _BBS_3MF_Exporter::_add_custom_gcode_per_print_z_file_to_archive(mz_zip_arc
                 code_tree.put("<xmlattr>.gcode", gcode);
             }
 
+            if (auto slot_it = slot_reloads.find(custom_gcodes.first); slot_it != slot_reloads.end()) {
+                append_slot_reload_layers(plate_tree, slot_it->second.directives);
+                slot_reload_written[custom_gcodes.first] = true;
+                has_custom_gcode = true;
+            }
+
             pt::ptree& mode_tree = plate_tree.add("mode", "");
             // store mode of a custom_gcode_per_print_z
             mode_tree.put("<xmlattr>.value", custom_gcodes.second.mode == CustomGCode::Mode::SingleExtruder ? CustomGCode::SingleExtruderMode :
                 custom_gcodes.second.mode == CustomGCode::Mode::MultiAsSingle ? CustomGCode::MultiAsSingleMode :
                 CustomGCode::MultiExtruderMode);
 
+    }
+    for (const auto &slot_reload : slot_reloads) {
+        if (slot_reload_written[slot_reload.first])
+            continue;
+        has_custom_gcode = true;
+        pt::ptree &plate_tree = main_tree.add("plate", "");
+        pt::ptree &plate_idx_tree = plate_tree.add("plate_info", "");
+        plate_idx_tree.put("<xmlattr>.id", slot_reload.first + 1);
+        append_slot_reload_layers(plate_tree, slot_reload.second.directives);
+        pt::ptree &mode_tree = plate_tree.add("mode", "");
+        mode_tree.put("<xmlattr>.value", CustomGCode::MultiAsSingleMode);
     }
     if (has_custom_gcode) {
         std::ostringstream oss;
@@ -9126,6 +9186,23 @@ bool _BBS_3MF_Exporter::_add_custom_gcode_per_print_z_file_to_archive(mz_zip_arc
         if (!mz_zip_writer_add_mem(&archive, CUSTOM_GCODE_PER_PRINT_Z_FILE.c_str(), (const void*)out.data(), out.length(), MZ_DEFAULT_COMPRESSION)) {
             add_error("Unable to add custom Gcodes per print_z file to archive");
             BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << ":" << __LINE__ << boost::format(", Unable to add custom Gcodes per print_z file to archive\n");
+            return false;
+        }
+    }
+
+    if (!slot_reloads.empty()) {
+        std::ostringstream sheet;
+        for (const auto &slot_reload : slot_reloads) {
+            if (slot_reload.second.swap_sheet.empty())
+                continue;
+            if (slot_reloads.size() > 1)
+                sheet << "Plate " << (slot_reload.first + 1) << "\n";
+            sheet << slot_reload.second.swap_sheet << "\n";
+        }
+        const std::string sheet_text = sheet.str();
+        if (!sheet_text.empty() &&
+            !mz_zip_writer_add_mem(&archive, "Metadata/swap_sheet.txt", (const void *) sheet_text.data(), sheet_text.size(), MZ_DEFAULT_COMPRESSION)) {
+            add_error("Unable to add swap sheet to archive");
             return false;
         }
     }

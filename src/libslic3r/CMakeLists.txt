@@ -303,6 +303,7 @@ set(lisbslic3r_sources
     GCode/ThumbnailData.hpp
     GCode/Thumbnails.cpp
     GCode/Thumbnails.hpp
+    GCode/SlotReloadPlanner.cpp
     GCode/ToolOrdering.cpp
     GCode/ToolOrdering.hpp
     GCode/OrderingStrategies.cpp

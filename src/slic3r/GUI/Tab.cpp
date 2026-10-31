@@ -2546,8 +2546,10 @@ void Tab::on_value_change(const std::string& opt_key, const boost::any& value)
     }
 
 
-    //Orca: sync filament num if it's a multi tool printer
-    if (opt_key == "extruders_count" && !m_config->opt_bool("single_extruder_multi_material")){
+    //Orca: sync filament num if it's a multi tool printer.
+    // Slot sharing keeps a filament list that is longer than the toolhead count, so a
+    // nozzle-count change must not delete those extra filaments.
+    if (opt_key == "extruders_count" && !m_config->opt_bool("single_extruder_multi_material") && !slot_reload_allows_extra_filaments(*m_config)){
         const size_t num_extruder = boost::any_cast<size_t>(value);
         auto        *bundle       = wxGetApp().preset_bundle;
         Sidebar     &sidebar      = wxGetApp().plater()->sidebar();
@@ -6113,6 +6115,7 @@ if (is_marlin_flavor)
             });
         };
         optgroup->append_single_option_line("manual_filament_change", "printer_multimaterial_setup#manual-filament-change");
+        optgroup->append_single_option_line("slot_reload_mode");
         optgroup->append_single_option_line("bed_temperature_formula", "printer_basic_information_advanced#bed-temperature-type");
 
         optgroup = page->new_optgroup(L("Wipe tower"), "param_tower");

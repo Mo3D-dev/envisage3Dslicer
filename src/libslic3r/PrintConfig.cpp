@@ -292,6 +292,13 @@ static t_config_enum_values s_keys_map_WipeTowerType {
 };
 CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(WipeTowerType)
 
+static t_config_enum_values s_keys_map_SlotReloadMode {
+    { "auto", int(SlotReloadMode::Auto) },
+    { "on",   int(SlotReloadMode::On) },
+    { "off",  int(SlotReloadMode::Off) }
+};
+CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(SlotReloadMode)
+
 
 static t_config_enum_values s_keys_map_FuzzySkinMode {
     { "displacement",   int(FuzzySkinMode::Displacement) },
@@ -7158,6 +7165,19 @@ void PrintConfigDef::init_fff_params()
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionBool(false));
 
+    def = this->add("slot_reload_mode", coEnum);
+    def->label = L("More colours than slots");
+    def->tooltip = L("When a print uses more filaments than this printer has toolheads, share the slots and pause at the start of a reload layer so the spool can be changed by hand. G-code then names only the physical toolheads. Auto enables this for the Flashforge Creator 5 Pro and leaves every other printer unchanged.");
+    def->enum_keys_map = &ConfigOptionEnum<SlotReloadMode>::get_enum_values();
+    def->enum_values.emplace_back("auto");
+    def->enum_values.emplace_back("on");
+    def->enum_values.emplace_back("off");
+    def->enum_labels.emplace_back(L("Auto"));
+    def->enum_labels.emplace_back(L("On"));
+    def->enum_labels.emplace_back(L("Off"));
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionEnum<SlotReloadMode>(SlotReloadMode::Auto));
+
     def = this->add("wipe_tower_type", coEnum);
     def->label = L("Wipe tower type");
     def->tooltip = L("Choose the wipe tower implementation for multi-material prints. Type 1 is recommended for Bambu and Qidi printers with a filament cutter. Type 2 offers better compatibility with multi-tool and MMU printers and provide overall better compatibility.");
@@ -10664,6 +10684,17 @@ static void extend_extruder_variant(DynamicPrintConfig& config, const unsigned i
     for (const std::string &key : printer_options_with_variant_2)
         if (auto *opt = config.option<ConfigOptionFloats>(key))
             opt->resize(config.get_parameter_size(key, num_extruders), defaults.option(key));
+}
+
+bool slot_reload_allows_extra_filaments(const DynamicPrintConfig &config)
+{
+    SlotReloadMode mode = SlotReloadMode::Auto;
+    if (auto *mode_opt = config.option<ConfigOptionEnum<SlotReloadMode>>("slot_reload_mode"))
+        mode = mode_opt->value;
+    std::string printer_model;
+    if (auto *model_opt = config.option<ConfigOptionString>("printer_model"))
+        printer_model = model_opt->value;
+    return slot_reload_allows_extra_filaments(mode, printer_model);
 }
 
 void DynamicPrintConfig::set_num_extruders(unsigned int num_extruders)

@@ -883,6 +883,20 @@ int ConfigBase::load_from_json(const std::string &file, ConfigSubstitutionContex
 
     CNumericLocalesSetter locales_setter;
 
+    // One unknown or unreadable key must not discard the rest of a project file.
+    // project_settings.config stores the obsolete per-filament "bed_type" before
+    // printer_settings_id, filament_colour and slot_reload_mode; aborting there
+    // left those keys unset and the open project kept the session's printer.
+    auto deserialize_or_skip = [&](const std::string &key, const std::string &value) {
+        try {
+            this->set_deserialize(key, value, substitution_context);
+        } catch (const UnknownOptionException &) {
+            auto &unknown = substitution_context.unrecogized_keys;
+            if (std::find(unknown.begin(), unknown.end(), key) == unknown.end())
+                unknown.push_back(key);
+        }
+    };
+
     std::function<bool(const json::const_iterator&, const char,const char,const bool,std::string&)> parse_str_arr = [&parse_str_arr](const json::const_iterator& it, const char single_sep,const char array_sep,const bool escape_string_style,std::string& value_str)->bool {
         // must have consistent type name
         std::string consistent_type;
@@ -984,7 +998,7 @@ int ConfigBase::load_from_json(const std::string &file, ConfigSubstitutionContex
 
                 if (it.value().is_string()) {
                     //bool test1 = (it.key() == std::string("end_gcode"));
-                    this->set_deserialize(opt_key, it.value(), substitution_context);
+                    deserialize_or_skip(opt_key, it.value());
                     //some logic for special values
                     if (opt_key == "support_type") {
                         //std::string new_value = dynamic_cast<ConfigOptionString*>(this->option(opt_key))->value;
@@ -1055,7 +1069,7 @@ int ConfigBase::load_from_json(const std::string &file, ConfigSubstitutionContex
                         break;
                     }
                     if (valid)
-                        this->set_deserialize(opt_key, value_str, substitution_context);
+                        deserialize_or_skip(opt_key, value_str);
                 }
                 else {
                     //should not happen

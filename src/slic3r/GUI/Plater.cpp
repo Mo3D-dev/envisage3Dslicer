@@ -190,6 +190,7 @@
 #include "libslic3r/CSGMesh/PerformCSGMeshBooleans.hpp"
 
 #include "GUI.hpp"
+#include "BuildCommit.hpp"
 #include "GUI_App.hpp"
 #include "Shortcuts.hpp"
 #include "GUI_ObjectList.hpp"
@@ -247,6 +248,9 @@
 #include "NotificationManager.hpp"
 #include "PresetComboBoxes.hpp"
 #include "MsgDialog.hpp"
+#include "libslic3r/GCode/SlotReloadPlanner.hpp"
+#include <fstream>
+#include <sstream>
 #include "Widgets/MultiNozzleSync.hpp"           // NozzleOption, tryPopUpMultiNozzleDialog, setExtruderNozzleCount
 #include "DeviceCore/DevNozzleSystem.h"          // DevNozzle, GetExtNozzles / GetRackNozzles
 #include "ProjectDirtyStateManager.hpp"
@@ -6575,7 +6579,9 @@ bool Sidebar::should_show_SEMM_buttons()
     bool is_bbl_vendor = preset_bundle.is_bbl_vendor();
     auto cfg = preset_bundle.printers.get_edited_preset().config;
 
-    return cfg.opt_bool("single_extruder_multi_material") || is_bbl_vendor;
+    // Slot sharing uses the same add/delete filament controls as a shared-nozzle printer.
+    // Physical toolheads stay at the nozzle count; only the filament list grows.
+    return cfg.opt_bool("single_extruder_multi_material") || is_bbl_vendor || slot_reload_allows_extra_filaments(cfg);
 }
 
 void Sidebar::show_SEMM_buttons()
@@ -9548,7 +9554,23 @@ std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_
 
                 if (load_config) {
                     if (!config.empty()) {
+                        // Slot sharing must keep the file's filament colours. Preset::normalize
+                        // sizes extruder vectors to the nozzle count, and a printer reload can
+                        // then drop any filament past that count. Remember the file colours and
+                        // put them back after that reload.
+                        std::vector<std::string> file_filament_colours;
+                        std::vector<std::string> file_filament_ids;
+                        if (auto *file_colours = config.option<ConfigOptionStrings>("filament_colour"))
+                            file_filament_colours = file_colours->values;
+                        if (auto *file_ids = config.option<ConfigOptionStrings>("filament_settings_id"))
+                            file_filament_ids = file_ids->values;
+                        const bool keep_extra_filaments = slot_reload_allows_extra_filaments(config);
                         Preset::normalize(config);
+                        if (keep_extra_filaments && !file_filament_colours.empty()) {
+                            config.option<ConfigOptionStrings>("filament_colour", true)->values = file_filament_colours;
+                            if (!file_filament_ids.empty())
+                                config.option<ConfigOptionStrings>("filament_settings_id", true)->values = file_filament_ids;
+                        }
                         PresetBundle *preset_bundle = wxGetApp().preset_bundle;
 
                         {
@@ -9771,6 +9793,24 @@ std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_
                             // BBS: add preset combo box re-active logic
                             // currently found only needs re-active here
                             wxGetApp().load_current_presets(false, false);
+                            // A printer reload sizes the filament list to the nozzle count, and a
+                            // selection callback can write the colours that were already on screen.
+                            // Put the file's colours back so parts on filaments 5 and 6 stay there.
+                            {
+                                auto *loaded_colours = preset_bundle->project_config.option<ConfigOptionStrings>("filament_colour");
+                                const bool colours_match = loaded_colours != nullptr && loaded_colours->values == file_filament_colours;
+                                if (keep_extra_filaments && !file_filament_colours.empty() &&
+                                    (file_filament_colours.size() != preset_bundle->filament_presets.size() || !colours_match)) {
+                                    if (file_filament_colours.size() != preset_bundle->filament_presets.size())
+                                        preset_bundle->set_num_filaments((unsigned) file_filament_colours.size());
+                                    preset_bundle->project_config.option<ConfigOptionStrings>("filament_colour")->values = file_filament_colours;
+                                    if (auto *multi = preset_bundle->project_config.option<ConfigOptionStrings>("filament_multi_colour")) {
+                                        multi->values.resize(file_filament_colours.size());
+                                        for (size_t i = 0; i < file_filament_colours.size(); ++i)
+                                            multi->values[i] = file_filament_colours[i];
+                                    }
+                                }
+                            }
                             // Update filament colors for the MM-printer profile in the full config
                             // to avoid black (default) colors for Extruders in the ObjectList,
                             // when for extruder colors are used filament colors
@@ -13455,6 +13495,35 @@ void Plater::priv::on_process_completed(SlicingProcessCompletedEvent &evt)
         BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(", cancel event, status: %1%") % evt.status();
         this->notification_manager->set_slicing_progress_canceled(_u8L("Slicing Canceled"));
         is_finished = true;
+    } else if (!has_error) {
+        PartPlate *sliced_plate = this->partplate_list.get_plate(m_cur_slice_plate);
+        const GCodeProcessorResult *slice_result = sliced_plate ? sliced_plate->get_slice_result() : nullptr;
+        if (slice_result != nullptr && !slice_result->slot_reload_swap_sheet.empty()) {
+            if (!slice_result->filename.empty()) {
+                std::ifstream gcode_in(slice_result->filename, std::ios::binary);
+                std::ostringstream gcode_text;
+                if (gcode_in)
+                    gcode_text << gcode_in.rdbuf();
+                const SlotReloadExtract extracted = extract_slot_reload_markers(gcode_text.str());
+                auto &info = this->model.plates_custom_gcodes[m_cur_slice_plate];
+                info.gcodes.erase(std::remove_if(info.gcodes.begin(), info.gcodes.end(), [](const CustomGCode::Item &item) {
+                    return item.extra == "slot_reload";
+                }), info.gcodes.end());
+                for (const SlotReloadDirective &directive : extracted.directives) {
+                    CustomGCode::Item item;
+                    item.print_z  = directive.print_z;
+                    item.type     = directive.pause ? CustomGCode::PausePrint : CustomGCode::ColorChange;
+                    item.extruder = directive.extruder_1based;
+                    item.color    = directive.color;
+                    item.extra    = "slot_reload";
+                    info.gcodes.push_back(item);
+                }
+                if (info.mode == CustomGCode::Undef)
+                    info.mode = CustomGCode::MultiAsSingle;
+            }
+            MessageDialog dialog(q, from_u8(slice_result->slot_reload_swap_sheet), _L("Filament swap sheet"), wxOK | wxICON_INFORMATION);
+            dialog.ShowModal();
+        }
     }
 
     {
@@ -14474,19 +14543,29 @@ wxString Plater::priv::get_project_name()
     return m_project_name;
 }
 
+// The short git sha of this build, so two disk images can be told apart without opening About.
+static wxString window_title_with_build(const wxString &title)
+{
+    const wxString build = wxString::FromUTF8(build_commit_label);
+    if (build.empty() || build == wxString("0000000"))
+        return title;
+    return title + " (" + build + ")";
+}
+
 //BBS
 void Plater::priv::set_project_name(const wxString& project_name)
 {
     BOOST_LOG_TRIVIAL(trace) << __FUNCTION__ << __LINE__ << " project is:" << project_name;
     m_project_name = project_name;
+    const wxString titled = window_title_with_build(m_project_name);
     //update topbar title
 #ifdef __APPLE__
-    wxGetApp().mainframe->SetTitle(m_project_name);
+    wxGetApp().mainframe->SetTitle(titled);
     if (!m_project_name.IsEmpty())
         wxGetApp().mainframe->update_title_colour_after_set_title();
 #else
-    wxGetApp().mainframe->SetTitle(m_project_name + " - OrcaSlicer");
-    wxGetApp().mainframe->topbar()->SetTitle(m_project_name);
+    wxGetApp().mainframe->SetTitle(titled + " - OrcaSlicer");
+    wxGetApp().mainframe->topbar()->SetTitle(titled);
 #endif
 }
 
@@ -14500,6 +14579,7 @@ void Plater::priv::update_title_dirty_status()
         title = "*" + m_project_name;
     else
         title = m_project_name;
+    title = window_title_with_build(title);
 
 #ifdef __APPLE__
     wxGetApp().mainframe->SetTitle(title);

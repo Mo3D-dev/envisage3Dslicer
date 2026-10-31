@@ -116,6 +116,25 @@ enum class WipeTowerType {
     Type2,
 };
 
+// Auto enables slot sharing on the Flashforge Creator 5 Pro and leaves every
+// other printer unchanged. On and Off override that.
+enum class SlotReloadMode {
+    Auto,
+    On,
+    Off,
+};
+
+// True when this printer may list more filaments than it has toolheads.
+// Off never does. On always does. Auto does only for the Flashforge Creator 5 Pro.
+inline bool slot_reload_allows_extra_filaments(SlotReloadMode mode, const std::string &printer_model)
+{
+    if (mode == SlotReloadMode::Off)
+        return false;
+    if (mode == SlotReloadMode::On)
+        return true;
+    return printer_model == "Flashforge Creator 5 Pro";
+}
+
 enum PrintHostType {
     htPrusaLink, htPrusaConnect, htOctoPrint, htDuet, htUltiMaker, htFlashAir, htAstroBox, htRepetier, htMKS, htESP3D, htCrealityPrint, htObico, htFlashforge, htSimplyPrint, htElegooLink, ht3DPrinterOS, htMoonraker
 };
@@ -801,6 +820,7 @@ CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(FuzzySkinType)
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(FuzzySkinMode)
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(TopSurfaceExpansionDirection)
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(WipeTowerType)
+CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(SlotReloadMode)
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(NoiseType)
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(InfillPattern)
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(IroningType)
@@ -1821,6 +1841,7 @@ PRINT_CONFIG_CLASS_DEFINE(
     ((ConfigOptionStrings,             filament_start_gcode))
     ((ConfigOptionBool,                single_extruder_multi_material))
     ((ConfigOptionBool,                manual_filament_change))
+    ((ConfigOptionEnum<SlotReloadMode>, slot_reload_mode))
     // IDEX/IQEX (independent X extruder) — parallel printing support for IDEX/IQEX printers
     ((ConfigOptionBool,                is_imex))
     ((ConfigOptionBool,                imex_firmware_managed_zones))
@@ -2765,6 +2786,9 @@ static bool has_zero_flush_volume_for_used_filaments(const std::vector<T> &fv_ma
 size_t get_extruder_index(const GCodeConfig& config, unsigned int filament_id);
 
 double nozzle_diameter_for_filament(const PrintConfig& config, int filament_id, bool is_bbl_printer);
+
+// Reads slot_reload_mode (missing means Auto) and printer_model from a config.
+bool slot_reload_allows_extra_filaments(const DynamicPrintConfig &config);
 
 } // namespace Slic3r
 

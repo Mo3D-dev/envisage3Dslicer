@@ -26,6 +26,7 @@
 #include <iterator>
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <set>
 #include <sstream>
 #include <string>
@@ -720,6 +721,39 @@ TEST_CASE("save_to_json round-trips plugin capability references as strings", "[
     REQUIRE(reloaded.load_from_json(tmp.string(), substitutions, true, key_values, reason) == 0);
     CHECK(reason.empty());
     CHECK(reloaded.option<ConfigOptionStrings>("slicing_pipeline_plugin")->values == refs);
+}
+
+TEST_CASE("load_from_json keeps preset names and colours that follow an unknown key", "[Config]") {
+    // The 6-colour test project stores the obsolete per-filament bed_type array before
+    // the preset ids and filament_colour. Stopping at that key left the session printer in place.
+    ScopedTemporaryFile tmp(".json");
+    {
+        boost::nowide::ofstream ofs(tmp.string());
+        ofs << R"({
+            "nozzle_diameter": ["0.4", "0.4", "0.4", "0.4"],
+            "bed_type": ["Textured PEI Plate", "Textured PEI Plate", "Textured PEI Plate", "Textured PEI Plate", "Textured PEI Plate", "Textured PEI Plate"],
+            "printer_settings_id": "Flashforge Creator 5 Pro 0.4 nozzle",
+            "print_settings_id": "0.28mm Extra Draft @FF C5",
+            "filament_settings_id": ["Generic PLA @FF C5P", "Generic PLA @FF C5P", "Generic PLA @FF C5P", "Generic PLA @FF C5P", "Generic PLA @FF C5P", "Generic PLA @FF C5P"],
+            "filament_colour": ["#008000", "#F72323", "#FFFFFF", "#898989", "#00C1AE", "#F4E2C1"],
+            "slot_reload_mode": "auto"
+        })";
+    }
+    DynamicPrintConfig config;
+    ConfigSubstitutionContext substitutions(ForwardCompatibilitySubstitutionRule::Enable);
+    std::map<std::string, std::string> key_values;
+    std::string reason;
+    REQUIRE(config.load_from_json(tmp.string(), substitutions, true, key_values, reason) == 0);
+    CHECK(reason.empty());
+    CHECK(config.opt_string("printer_settings_id") == "Flashforge Creator 5 Pro 0.4 nozzle");
+    CHECK(config.opt_string("print_settings_id") == "0.28mm Extra Draft @FF C5");
+    const auto colours = config.option<ConfigOptionStrings>("filament_colour")->values;
+    REQUIRE(colours.size() == 6);
+    CHECK(colours.front() == "#008000");
+    CHECK(colours.back() == "#F4E2C1");
+    CHECK(config.option<ConfigOptionEnum<SlotReloadMode>>("slot_reload_mode")->value == SlotReloadMode::Auto);
+    CHECK(std::find(substitutions.unrecogized_keys.begin(), substitutions.unrecogized_keys.end(), "bed_type")
+          != substitutions.unrecogized_keys.end());
 }
 
 TEST_CASE("load_from_json hands a preset's include list to the caller instead of the config", "[Config]") {
